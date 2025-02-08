@@ -86,11 +86,14 @@ class TrackingController:
             
     def _processing_loop(self):
         """Continuous processing loop for frames"""
+        # Initialize visualization timer
+        self._last_viz_time = time.time()
+        viz_interval = 0.033  # update visualization at max ~30 FPS
         while self.running:
             # Get latest frame if available
             with self.frame_lock:
                 if not self.frame_queue:
-                    time.sleep(FRAME_TIMEOUT)  # Short sleep if no frame
+                    time.sleep(FRAME_TIMEOUT)  # Sleep longer if no frame is available
                     continue
                 frame = self.frame_queue.pop()
             
@@ -101,15 +104,20 @@ class TrackingController:
                 # Get current tracking state
                 state = self.tracker.get_state()
                 
-                # Update visualization and control
-                self._update_visualization(frame, state)
+                # Always update control
                 self._update_control(frame.shape[1], state)
                 
+                # Update visualization only if sufficient time has passed
+                current_time = time.time()
+                if current_time - self._last_viz_time >= viz_interval and not self.headless:
+                    self._update_visualization(frame, state)
+                    self._last_viz_time = current_time
+                    
             except Exception as e:
                 print(f"Error processing frame: {e}")
-                
-            # Small sleep to prevent CPU overload
-            time.sleep(FRAME_TIMEOUT)
+            
+            # Brief sleep to yield CPU
+            time.sleep(0.005)
             
     def start(self):
         """Start the tracking system"""

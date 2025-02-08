@@ -198,14 +198,13 @@ def run_async_tracking(model, prompt, display_ui=True):
             if len(good_old) > 0:
                 displacement = np.mean(good_new - good_old, axis=0)
                 displacement = np.squeeze(displacement)
-                dx, dy = displacement.astype(int)
-
+                dx, dy = displacement
                 with state['lock']:
                     if state['kalman'] is not None:
                         state['kalman'].predict((dx, dy))
                     if state['bbox'] is not None:
                         x_min, y_min, x_max, y_max = state['bbox']
-                        state['bbox'] = (x_min + dx, y_min + dy, x_max + dx, y_max + dy)
+                        state['bbox'] = (int(x_min + dx), int(y_min + dy), int(x_max + dx), int(y_max + dy))
 
                 with state['lock']:
                     state['features'] = new_features
@@ -278,14 +277,14 @@ def run_async_tracking(model, prompt, display_ui=True):
                             if len(good_old) > 0:
                                 displacement = np.mean(good_new - good_old, axis=0)
                                 displacement = np.squeeze(displacement)
-                                dx, dy = displacement.astype(int)
+                                dx, dy = displacement
 
                                 if state['kalman']:
                                     state['kalman'].predict((dx, dy))
 
                                 if state['bbox'] is not None:
                                     x_min, y_min, x_max, y_max = state['bbox']
-                                    state['bbox'] = (x_min + dx, y_min + dy, x_max + dx, y_max + dy)
+                                    state['bbox'] = (int(x_min + dx), int(y_min + dy), int(x_max + dx), int(y_max + dy))
 
                                 state['features'] = new_features
                             else:
@@ -324,10 +323,11 @@ def run_async_tracking(model, prompt, display_ui=True):
 
 
 class AsyncTracker:
-    def __init__(self, model, prompt, detection_interval=2.0):
+    def __init__(self, model, prompt, detection_interval=2.0, display_ui=False):
         self.model = model
         self.prompt = prompt
         self.detection_interval = detection_interval
+        self.display_ui = display_ui
         
         # Tracking state
         self.kalman = None
@@ -342,26 +342,35 @@ class AsyncTracker:
         self.lock = threading.Lock()
         self.running = False
         self.detection_thread = None
+        self.last_detection_tick = time.time()  # Initialize last detection tick for tick-based updates
         
     def _cv2_to_pil(self, cv2_image):
         rgb = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2RGB)
         return Image.fromarray(rgb)
         
     def _detection_loop(self):
-        """Periodically performs object detection on the latest frame"""
+        """Detection loop for thread-based operation. Calls tick() repeatedly."""
         while self.running:
-            time.sleep(self.detection_interval)
+            self.tick()
+            time.sleep(0.01)
+        
+    def tick(self):
+        """Perform a single detection update if the detection interval has elapsed.
+        This function can be called externally to integrate the detection step with other event loops.
+        """
+        current_time = time.time()
+        if current_time - self.last_detection_tick >= self.detection_interval:
+            self.last_detection_tick = current_time
             with self.lock:
                 if not self.frame_buffer:
-                    continue
+                    print(f"[{{time.time()}}] [AsyncTracker] No frames available for detection in tick")
+                    return
                 last_frame_index, last_frame_bgr, last_frame_gray = self.frame_buffer[-1]
                 self.requested_detection_frame = last_frame_index
-
             pil_image = self._cv2_to_pil(last_frame_bgr)
             encoded = self.model.encode_image(pil_image)
             result = self.model.detect(encoded, self.prompt)
             objects = result.get("objects", [])
-            
             if objects:
                 obj = objects[0]
                 height, width = last_frame_bgr.shape[:2]
@@ -371,7 +380,7 @@ class AsyncTracker:
                 y_max = int(obj['y_max'] * height)
                 with self.lock:
                     self.pending_detection = (last_frame_index, (x_min, y_min, x_max, y_max))
-                    
+        
     def start(self):
         """Start the tracking system"""
         self.running = True
@@ -401,12 +410,14 @@ class AsyncTracker:
     def process_frame(self, frame):
         """Process a new frame and update tracking state"""
         curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
+        print(f"[{time.time()}] [AsyncTracker] Processing frame index: {self.frame_index}")
         with self.lock:
-            # Store current frame in buffer
+            print(f"[{time.time()}] [AsyncTracker] Acquired lock for appending frame; buffer length before append: {len(self.frame_buffer)}")
             self.frame_buffer.append((self.frame_index, frame.copy(), curr_gray.copy()))
+            print(f"[{time.time()}] [AsyncTracker] Updated frame_buffer length: {len(self.frame_buffer)}")
             features = self.features
-            
+            print(f"[{time.time()}] [AsyncTracker] Features status: {'available' if features is not None else 'None'}")
+
         # Get previous frame's grayscale image
         if len(self.frame_buffer) > 1:
             prev_idx, prev_bgr, prev_gray = self.frame_buffer[-2]
@@ -452,37 +463,42 @@ class AsyncTracker:
             if len(good_old) > 0:
                 displacement = np.mean(good_new - good_old, axis=0)
                 displacement = np.squeeze(displacement)
-                dx, dy = displacement.astype(int)
-
+                dx, dy = displacement
+                print(f"[{time.time()}] [AsyncTracker] Optical flow displacement: dx={dx}, dy={dy}")
                 with self.lock:
+                    print(f"[{time.time()}] [AsyncTracker] Acquired lock for updating tracking state")
                     if self.kalman is not None:
                         self.kalman.predict((dx, dy))
                     if self.bbox is not None:
                         x_min, y_min, x_max, y_max = self.bbox
-                        self.bbox = (x_min + dx, y_min + dy, x_max + dx, y_max + dy)
+                        self.bbox = (int(x_min + dx), int(y_min + dy), int(x_max + dx), int(y_max + dy))
                     self.features = new_features
+
+            if self.display_ui:
+                # Draw tracked points
+                for pt in good_new:
+                    x, y = pt.ravel()
+                    cv2.circle(frame, (int(x), int(y)), 3, (0, 0, 255), -1)
 
         # Handle any pending detection updates
         with self.lock:
             if self.pending_detection is not None:
+                print(f"[{time.time()}] [AsyncTracker] Pending detection found, processing detection update")
                 det_frame_index, det_bbox = self.pending_detection
                 self.pending_detection = None
-                
                 # Reset state
                 self.kalman = KalmanFilter2D()
                 self.bbox = None
                 self.features = None
-                
-                # Find detection frame and reinitialize
                 detection_found = False
                 for i, (f_idx, f_bgr, f_gray) in enumerate(self.frame_buffer):
                     if f_idx == det_frame_index:
+                        print(f"[{time.time()}] [AsyncTracker] Found detection frame at index {f_idx}")
                         x_min, y_min, x_max, y_max = det_bbox
                         cx = (x_min + x_max) // 2
                         cy = (y_min + y_max) // 2
                         self.kalman = KalmanFilter2D(center=(cx, cy))
                         self.bbox = det_bbox
-                        
                         mask = np.zeros_like(f_gray)
                         mask[y_min:y_max, x_min:x_max] = 255
                         self.features = cv2.goodFeaturesToTrack(
@@ -495,36 +511,36 @@ class AsyncTracker:
                         detection_found = True
                         detection_index = i
                         break
-                        
                 if detection_found:
-                    # Backfill tracking state
+                    print(f"[{time.time()}] [AsyncTracker] Starting backfill from detection_index: {detection_index}")
                     self._backfill_tracking(detection_index)
                     
         self.frame_index += 1
         
     def _backfill_tracking(self, detection_index):
         """Backfill tracking state from detection frame to current frame"""
+        print(f"[{time.time()}] [AsyncTracker] _backfill_tracking started from detection_index={detection_index}")
         for j in range(detection_index + 1, len(self.frame_buffer)):
             prev_idx, prev_bgr, prev_gray = self.frame_buffer[j - 1]
             curr_idx, curr_bgr, curr_gray = self.frame_buffer[j]
-            
             if self.features is not None and len(self.features) > 0:
-                new_features, status, _ = cv2.calcOpticalFlowPyrLK(
-                    prev_gray, curr_gray, self.features, None
-                )
+                new_features, status, _ = cv2.calcOpticalFlowPyrLK(prev_gray, curr_gray, self.features, None)
                 good_old = self.features[status.flatten() == 1]
                 good_new = new_features[status.flatten() == 1]
-                
                 if len(good_old) > 0:
                     displacement = np.mean(good_new - good_old, axis=0)
                     displacement = np.squeeze(displacement)
-                    dx, dy = displacement.astype(int)
-                    
+                    dx, dy = displacement
+                    print(f"[{time.time()}] [AsyncTracker] Backfill displacement at j={j}: dx={dx}, dy={dy}")
                     if self.kalman:
                         self.kalman.predict((dx, dy))
                     if self.bbox is not None:
                         x_min, y_min, x_max, y_max = self.bbox
-                        self.bbox = (x_min + dx, y_min + dy, x_max + dx, y_max + dy)
+                        self.bbox = (int(x_min + dx), int(y_min + dy), int(x_max + dx), int(y_max + dy))
                     self.features = new_features
                 else:
-                    break 
+                    print(f"[{time.time()}] [AsyncTracker] No good features in backfill at j={j}, breaking")
+                    break
+            else:
+                print(f"[{time.time()}] [AsyncTracker] No features to track in backfill at j={j}, breaking")
+                break 
