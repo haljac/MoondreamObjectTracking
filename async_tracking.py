@@ -320,4 +320,211 @@ def run_async_tracking(model, prompt, display_ui=True):
 
     cap.release()
     if display_ui:
-        cv2.destroyAllWindows() 
+        cv2.destroyAllWindows()
+
+
+class AsyncTracker:
+    def __init__(self, model, prompt, detection_interval=2.0):
+        self.model = model
+        self.prompt = prompt
+        self.detection_interval = detection_interval
+        
+        # Tracking state
+        self.kalman = None
+        self.bbox = None
+        self.features = None
+        self.frame_buffer = collections.deque(maxlen=200)
+        self.pending_detection = None
+        self.requested_detection_frame = None
+        self.frame_index = 0
+        
+        # Threading
+        self.lock = threading.Lock()
+        self.running = False
+        self.detection_thread = None
+        
+    def _cv2_to_pil(self, cv2_image):
+        rgb = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb)
+        
+    def _detection_loop(self):
+        """Periodically performs object detection on the latest frame"""
+        while self.running:
+            time.sleep(self.detection_interval)
+            with self.lock:
+                if not self.frame_buffer:
+                    continue
+                last_frame_index, last_frame_bgr, last_frame_gray = self.frame_buffer[-1]
+                self.requested_detection_frame = last_frame_index
+
+            pil_image = self._cv2_to_pil(last_frame_bgr)
+            encoded = self.model.encode_image(pil_image)
+            result = self.model.detect(encoded, self.prompt)
+            objects = result.get("objects", [])
+            
+            if objects:
+                obj = objects[0]
+                height, width = last_frame_bgr.shape[:2]
+                x_min = int(obj['x_min'] * width)
+                y_min = int(obj['y_min'] * height)
+                x_max = int(obj['x_max'] * width)
+                y_max = int(obj['y_max'] * height)
+                with self.lock:
+                    self.pending_detection = (last_frame_index, (x_min, y_min, x_max, y_max))
+                    
+    def start(self):
+        """Start the tracking system"""
+        self.running = True
+        
+        # Start detection thread
+        self.detection_thread = threading.Thread(
+            target=self._detection_loop,
+            daemon=True
+        )
+        self.detection_thread.start()
+        
+    def stop(self):
+        """Stop the tracking system"""
+        self.running = False
+        if self.detection_thread and self.detection_thread.is_alive():
+            self.detection_thread.join(timeout=1.0)
+            
+    def get_state(self):
+        """Get current tracking state"""
+        with self.lock:
+            return {
+                'kalman': self.kalman.get_state() if self.kalman else None,
+                'bbox': self.bbox,
+                'frame_index': self.frame_index
+            }
+            
+    def process_frame(self, frame):
+        """Process a new frame and update tracking state"""
+        curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        with self.lock:
+            # Store current frame in buffer
+            self.frame_buffer.append((self.frame_index, frame.copy(), curr_gray.copy()))
+            features = self.features
+            
+        # Get previous frame's grayscale image
+        if len(self.frame_buffer) > 1:
+            prev_idx, prev_bgr, prev_gray = self.frame_buffer[-2]
+        else:
+            # Initialize tracking on first frame
+            if not self.kalman:
+                pil_image = self._cv2_to_pil(frame)
+                encoded = self.model.encode_image(pil_image)
+                result = self.model.detect(encoded, self.prompt)
+                objects = result.get("objects", [])
+                
+                if objects:
+                    obj = objects[0]
+                    height, width = frame.shape[:2]
+                    x_min = int(obj['x_min'] * width)
+                    y_min = int(obj['y_min'] * height)
+                    x_max = int(obj['x_max'] * width)
+                    y_max = int(obj['y_max'] * height)
+                    center_x = (x_min + x_max) // 2
+                    center_y = (y_min + y_max) // 2
+                    
+                    with self.lock:
+                        self.bbox = (x_min, y_min, x_max, y_max)
+                        self.kalman = KalmanFilter2D(center=(center_x, center_y))
+                        mask = np.zeros_like(curr_gray)
+                        mask[y_min:y_max, x_min:x_max] = 255
+                        self.features = cv2.goodFeaturesToTrack(
+                            curr_gray, 
+                            mask=mask,
+                            maxCorners=20,
+                            qualityLevel=0.1,
+                            minDistance=10
+                        )
+            self.frame_index += 1
+            return
+
+        # Optical flow tracking
+        if features is not None:
+            new_features, status, _ = cv2.calcOpticalFlowPyrLK(prev_gray, curr_gray, features, None)
+            good_old = features[status.flatten() == 1]
+            good_new = new_features[status.flatten() == 1]
+
+            if len(good_old) > 0:
+                displacement = np.mean(good_new - good_old, axis=0)
+                displacement = np.squeeze(displacement)
+                dx, dy = displacement.astype(int)
+
+                with self.lock:
+                    if self.kalman is not None:
+                        self.kalman.predict((dx, dy))
+                    if self.bbox is not None:
+                        x_min, y_min, x_max, y_max = self.bbox
+                        self.bbox = (x_min + dx, y_min + dy, x_max + dx, y_max + dy)
+                    self.features = new_features
+
+        # Handle any pending detection updates
+        with self.lock:
+            if self.pending_detection is not None:
+                det_frame_index, det_bbox = self.pending_detection
+                self.pending_detection = None
+                
+                # Reset state
+                self.kalman = KalmanFilter2D()
+                self.bbox = None
+                self.features = None
+                
+                # Find detection frame and reinitialize
+                detection_found = False
+                for i, (f_idx, f_bgr, f_gray) in enumerate(self.frame_buffer):
+                    if f_idx == det_frame_index:
+                        x_min, y_min, x_max, y_max = det_bbox
+                        cx = (x_min + x_max) // 2
+                        cy = (y_min + y_max) // 2
+                        self.kalman = KalmanFilter2D(center=(cx, cy))
+                        self.bbox = det_bbox
+                        
+                        mask = np.zeros_like(f_gray)
+                        mask[y_min:y_max, x_min:x_max] = 255
+                        self.features = cv2.goodFeaturesToTrack(
+                            f_gray,
+                            mask=mask,
+                            maxCorners=20,
+                            qualityLevel=0.1,
+                            minDistance=10
+                        )
+                        detection_found = True
+                        detection_index = i
+                        break
+                        
+                if detection_found:
+                    # Backfill tracking state
+                    self._backfill_tracking(detection_index)
+                    
+        self.frame_index += 1
+        
+    def _backfill_tracking(self, detection_index):
+        """Backfill tracking state from detection frame to current frame"""
+        for j in range(detection_index + 1, len(self.frame_buffer)):
+            prev_idx, prev_bgr, prev_gray = self.frame_buffer[j - 1]
+            curr_idx, curr_bgr, curr_gray = self.frame_buffer[j]
+            
+            if self.features is not None and len(self.features) > 0:
+                new_features, status, _ = cv2.calcOpticalFlowPyrLK(
+                    prev_gray, curr_gray, self.features, None
+                )
+                good_old = self.features[status.flatten() == 1]
+                good_new = new_features[status.flatten() == 1]
+                
+                if len(good_old) > 0:
+                    displacement = np.mean(good_new - good_old, axis=0)
+                    displacement = np.squeeze(displacement)
+                    dx, dy = displacement.astype(int)
+                    
+                    if self.kalman:
+                        self.kalman.predict((dx, dy))
+                    if self.bbox is not None:
+                        x_min, y_min, x_max, y_max = self.bbox
+                        self.bbox = (x_min + dx, y_min + dy, x_max + dx, y_max + dy)
+                    self.features = new_features
+                else:
+                    break 
