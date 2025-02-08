@@ -36,8 +36,7 @@ class ZenohPub:
             exit(1)
             
         self.prompt = prompt
-        # Create AsyncTracker; note we do NOT call tracker.start() so no detection thread is spawned –
-        # instead, we drive the detection update manually via tick() on each frame.
+        # Create AsyncTracker; detection thread will be started in run() to update tracking state concurrently.
         self.tracker = AsyncTracker(self.model, self.prompt, detection_interval=2.0, display_ui=False)
 
     def on_frame(self, sample):
@@ -58,15 +57,12 @@ class ZenohPub:
         A constant linear velocity is used if the loop rate is above 10 Hz, else zero.
         """
         if state['kalman'] is None:
-            # No valid tracking data – publish zero commands
             return {'x': 0.0, 'theta': 0.0}
         target_x = state['kalman'][0]
         center_x = frame_width / 2.0
         error_x = target_x - center_x
-        # Gain factor for angular velocity (adjust as needed)
         gain = 0.005
-        angular_z = -gain * error_x  # Negative sign to counter the error
-        # Set linear speed based on loop rate
+        angular_z = -gain * error_x
         if loop_rate > 10:
             linear_x = 0.3
         else:
@@ -74,12 +70,13 @@ class ZenohPub:
         return {'x': float(linear_x), 'theta': float(angular_z)}
 
     def run(self):
-        """Main loop: processes incoming frames, updates tracking using the tick method, computes twist, and publishes it."""
+        """Main loop: processes incoming frames, updates tracking, computes twist, and publishes it."""
         try:
             print("Running zenoh publisher for tracking and twist commands.")
+            # Start the AsyncTracker's detection thread
+            self.tracker.start()
             prev_loop_time = time.time()
             while True:
-                # Compute loop rate
                 current_time = time.time()
                 dt = current_time - prev_loop_time
                 prev_loop_time = current_time
@@ -88,19 +85,16 @@ class ZenohPub:
                 frame = None
                 with self.frame_lock:
                     if self.latest_frame is not None:
-                        # Copy latest frame and then reset it; this prevents processing the same frame twice.
                         frame = self.latest_frame.copy()
                         self.latest_frame = None
                 if frame is None:
                     time.sleep(0.01)
                     continue
 
-                # Manually run detection update before processing the frame
-                self.tracker.tick()
+                # Process frame; AsyncTracker's detection thread updates state concurrently
                 self.tracker.process_frame(frame)
                 state = self.tracker.get_state()
 
-                # If tracking data is valid, compute twist command based on the target's position
                 if state['bbox'] is not None and state['kalman'] is not None:
                     frame_width = frame.shape[1]
                     twist_cmd = self.compute_twist(state, frame_width, loop_rate)
@@ -117,16 +111,14 @@ class ZenohPub:
                     new_bbox = (int(center[0] - w/2), int(center[1] - h/2), int(center[0] + w/2), int(center[1] + h/2))
                     frame = draw_bbox(frame, new_bbox)
                 else:
-                    # If there's no valid tracking state, send a zero twist command
                     twist_cmd = {'x': 0.0, 'theta': 0.0}
                     print("No valid tracking, publishing zero twist command")
                     self.cmd_pub.put(json.dumps(twist_cmd))
 
-                # Visualize the frame using Rerun (convert BGR to RGB for visualization)
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 rr.log("camera/frame", rr.Image(frame_rgb))
 
-                time.sleep(1.0 / 30.0)  # Run at ~30 Hz
+                time.sleep(1.0 / 30.0)
         except KeyboardInterrupt:
             print("Shutting down zenoh publisher.")
         finally:
