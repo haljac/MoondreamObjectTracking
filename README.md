@@ -4,8 +4,31 @@ A Python script that demonstrates asynchronous object detection and tracking usi
 - [OpenCV](https://opencv.org/) for video capture, feature tracking (Lucas-Kanade optical flow), and drawing
 - A [Kalman Filter](https://en.wikipedia.org/wiki/Kalman_filter) for smoothing tracked coordinates
 - [Moondream](https://moondream.ai/) for VLM based object detection
+- [Zenoh](https://zenoh.io/) for network communication between components
 
 <b>Disclaimer:</b> If not already obvious this document was written by an LLM but should be mostly correct.  
+
+## System Architecture
+
+The system consists of two main components that can run on different machines as long as they're on the same network:
+
+1. **Webcam Publisher (`webcam_publisher.py`)**
+   - Captures frames from a webcam and publishes them to a Zenoh topic (`robot/camera/frame`)
+   - Can run on either your laptop or directly on a robot
+   - Configurable parameters for camera resolution, FPS, and frame processing
+   - Supports both monocular and stereo camera setups with cropping options
+
+2. **Visual Servoing Publisher (`zenoh_pub.py`)**
+   - Subscribes to camera frames from the webcam publisher
+   - Uses Moondream for object detection and tracking
+   - Computes and publishes twist commands for robot control
+   - Twist messages are published to `robot/cmd` in the following JSON format:
+     ```json
+     {
+       "x": float,     // Linear velocity in m/s
+       "theta": float  // Angular velocity in rad/s
+     }
+     ```
 
 ## Features
 
@@ -26,7 +49,7 @@ You may also need libraries for concurrency (threading) and data structures (col
 2. **Install dependencies** (using `pip`):
 
    ```bash
-   pip install opencv-python Pillow numpy moondream
+   pip install opencv-python Pillow numpy moondream zenoh-python rerun-sdk
    ```
 
 3. **API Key**  
@@ -36,31 +59,38 @@ You may also need libraries for concurrency (threading) and data structures (col
    your_moondream_api_key_goes_here
    ```
 
-4. **Run**  
-   Use Python to run the `main.py` file:
+4. **Run Components**  
+   First, start the webcam publisher:
    ```bash
-   python main.py
+   python webcam_publisher.py
    ```
-   The script will prompt you for the object you want to track (e.g., "pliers").
+   
+   Then in a separate terminal, start the visual servoing:
+   ```bash
+   python zenoh_pub.py --prompt "object to track"
+   ```
+   Replace "object to track" with your target object (e.g., "red ball", "person", etc.)
 
 ## Usage
 
-1. **Program Flow**  
-   - The script starts your webcam, captures frames, and looks for the specified object.  
-   - Once the initial detection is found, it initializes a Kalman filter around the object's bounding box and starts tracking features via optical flow.
-   - Meanwhile, a separate thread regularly performs new detections, in case the object changes position drastically or is lost.
+1. **Network Setup**
+   - Ensure all machines are on the same network
+   - Zenoh will automatically discover peers on the network
+   - No manual IP configuration needed in most cases
 
-2. **Controls**  
-   - The program opens an OpenCV window with some sliders you can adjust:
-     - **maxCorners** (defaults to 27): The maximum number of features to track.  
-     - **qualityLevel x100** (defaults to 10): Determines the minimum quality (scaled by 100) of selected features.  
-     - **minDistance** (defaults to 10): The minimum distance between tracked features.  
-   - Press **'q'** in the OpenCV window to exit the program.
+2. **Webcam Publisher**
+   - Publishes camera frames at configurable resolution and FPS
+   - Check `constants.py` for camera configuration options
+   - Supports stereo camera setups with options to crop to left/right frame
 
-3. **Detection Interval**  
-   - The detection thread runs every few seconds (default is 2.0). You can change it by editing the `detection_interval` argument in the `detection_loop` function.
+3. **Visual Servoing**
+   - Subscribes to camera frames and tracks specified object
+   - Publishes twist commands for robot control
+   - Uses Rerun for real-time visualization of tracking
+   - Twist commands are rate-limited and smoothed for stable robot control
 
-4. **Debugging**  
-   - If you lose the object or the bounding box drifts away, you can:
-     - Wait for the next detection to correct it.
-     - Or manually kill the program (`Ctrl + C` or `q` in the window), adjust parameters, and rerun.
+4. **Controls and Parameters**
+   - The visual servoing has configurable gains in `zenoh_pub.py`:
+     - `gain`: Controls how aggressively to turn (default: 0.005)
+     - `max_angular_z`: Maximum turning speed in rad/s (default: 0.35)
+   - Press **Ctrl+C** in either terminal to stop the respective component

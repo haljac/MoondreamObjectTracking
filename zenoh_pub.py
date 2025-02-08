@@ -62,11 +62,11 @@ class ZenohPub:
         center_x = frame_width / 2.0
         error_x = target_x - center_x
         gain = 0.005
+        max_angular_z = 0.35
         angular_z = -gain * error_x
-        if loop_rate > 10:
-            linear_x = 0.3
-        else:
-            linear_x = 0.0
+        angular_z = min(angular_z, max_angular_z)
+        angular_z = max(angular_z, -max_angular_z)
+        linear_x = 0.0
         return {'x': float(linear_x), 'theta': float(angular_z)}
 
     def run(self):
