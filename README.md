@@ -5,7 +5,7 @@ A Python script that demonstrates asynchronous object detection and tracking usi
 - A [Kalman Filter](https://en.wikipedia.org/wiki/Kalman_filter) for smoothing tracked coordinates
 - [Moondream](https://moondream.ai/) for VLM based object detection
 
-** Disclaimer: If not already obvious this document was written by a LLM but should be mostly correct.**  
+** Disclaimer: If not already obvious this document was written by a LLM but should be mostly correct. **  
 
 ## Features
 
