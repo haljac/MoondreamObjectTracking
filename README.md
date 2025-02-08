@@ -71,7 +71,3 @@ You may also need libraries for concurrency (threading) and data structures (col
    - If you lose the object or the bounding box drifts away, you can:
      - Wait for the next detection to correct it.
      - Or manually kill the program (`Ctrl + C` or `q` in the window), adjust parameters, and rerun.
-
-## License
-
-This project is provided for educational or personal use. Refer to the respective licenses of included libraries (OpenCV, Pillow, Numpy, Moondream, etc.) for detailed usage terms and conditions. 
