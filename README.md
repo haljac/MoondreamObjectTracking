@@ -1,9 +1,9 @@
-# Asynchronous Tracking with Kalman Filter
+# Realtime object detection & tracking with moondream.ai
 
 A Python script that demonstrates asynchronous object detection and tracking using:
 - [OpenCV](https://opencv.org/) for video capture, feature tracking (Lucas-Kanade optical flow), and drawing
 - A [Kalman Filter](https://en.wikipedia.org/wiki/Kalman_filter) for smoothing tracked coordinates
-- A slow-but-accurate detection model (using the `moondream` library) that runs in a separate thread
+- [Moondream](https://moondream.ai/) for VLM based object detection
 
 ## Features
 
@@ -16,21 +16,12 @@ A Python script that demonstrates asynchronous object detection and tracking usi
 3. **Rewind and Reapply**  
    When a new detection arrives, it's applied retroactively (rewinds to the detection frame, replays up to the present), ensuring the bounding box and features remain up-to-date.
 
-## Requirements
-
-- Python 3.6+  
-- [OpenCV](https://pypi.org/project/opencv-python/)  
-- [Pillow](https://pypi.org/project/Pillow/)  
-- [numpy](https://pypi.org/project/numpy/)  
-- [moondream](https://pypi.org/project/moondream/)  
-- A webcam (or other video capture device)  
-
 You may also need libraries for concurrency (threading) and data structures (collections), but these are typically part of Python's standard library.
 
 ## Setup
 
 1. **Clone or Download** this repository.  
-2. **Install dependencies** (for instance using `pip`):
+2. **Install dependencies** (using `pip`):
 
    ```bash
    pip install opencv-python Pillow numpy moondream
