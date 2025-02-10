@@ -10,7 +10,7 @@ A Python script that demonstrates asynchronous object detection and tracking usi
 
 ## System Architecture
 
-The system consists of two main components that can run on different machines as long as they're on the same network:
+The system consists of three main components that can run on different machines as long as they're on the same network:
 
 1. **Webcam Publisher (`webcam_publisher.py`)**
    - Captures frames from a webcam and publishes them to a Zenoh topic (`robot/camera/frame`)
@@ -18,11 +18,27 @@ The system consists of two main components that can run on different machines as
    - Configurable parameters for camera resolution, FPS, and frame processing
    - Supports both monocular and stereo camera setups with cropping options
 
-2. **Visual Servoing Publisher (`zenoh_pub.py`)**
+2. **Object Tracking Publisher (`tracking_publisher.py`)**
    - Subscribes to camera frames from the webcam publisher
    - Uses Moondream for object detection and tracking
-   - Computes and publishes twist commands for robot control
-   - Twist messages are published to `robot/cmd` in the following JSON format:
+   - Publishes normalized object position and size information to `tracking/position`
+   - Position messages are published in the following JSON format:
+     ```json
+     {
+       "x": float,        // Normalized x position (0-1)
+       "y": float,        // Normalized y position (0-1)
+       "width": float,    // Normalized width (0-1)
+       "height": float,   // Normalized height (0-1)
+       "confidence": float, // Detection confidence
+       "timestamp": float  // Unix timestamp
+     }
+     ```
+
+3. **Visual Servoing Example (`servoing_example.py`)**
+   - Demonstrates how to use tracking for robot control
+   - Subscribes to camera frames and computes twist commands
+   - Publishes robot control commands to `robot/cmd` topic
+   - Twist messages are in the following format:
      ```json
      {
        "x": float,     // Linear velocity in m/s
@@ -65,9 +81,14 @@ You may also need libraries for concurrency (threading) and data structures (col
    python webcam_publisher.py
    ```
    
-   Then in a separate terminal, start the visual servoing:
+   Then in a separate terminal, start object tracking:
    ```bash
-   python zenoh_pub.py --prompt "object to track"
+   python tracking_publisher.py --prompt "object to track"
+   ```
+
+   Optionally, run the visual servoing example:
+   ```bash
+   python servoing_example.py --prompt "object to track"
    ```
    Replace "object to track" with your target object (e.g., "red ball", "person", etc.)
 
@@ -83,14 +104,17 @@ You may also need libraries for concurrency (threading) and data structures (col
    - Check `constants.py` for camera configuration options
    - Supports stereo camera setups with options to crop to left/right frame
 
-3. **Visual Servoing**
+3. **Object Tracking**
    - Subscribes to camera frames and tracks specified object
-   - Publishes twist commands for robot control
+   - Publishes normalized position information (0-1 range)
    - Uses Rerun for real-time visualization of tracking
-   - Twist commands are rate-limited and smoothed for stable robot control
+   - Position updates are smoothed using Kalman filtering
 
-4. **Controls and Parameters**
-   - The visual servoing has configurable gains in `zenoh_pub.py`:
+4. **Visual Servoing Example**
+   - Demonstrates robot control using tracking data
+   - Configurable gains in `servoing_example.py`:
      - `gain`: Controls how aggressively to turn (default: 0.005)
      - `max_angular_z`: Maximum turning speed in rad/s (default: 0.35)
-   - Press **Ctrl+C** in either terminal to stop the respective component
+
+5. **Controls**
+   - Press **Ctrl+C** in any terminal to stop the respective component

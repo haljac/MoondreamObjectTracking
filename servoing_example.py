@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import cv2
 import zenoh
 import json
@@ -12,16 +11,16 @@ import moondream as md
 from async_tracking import AsyncTracker, draw_bbox
 
 
-class TrackingPublisher:
+class ZenohPub:
     def __init__(self, prompt):
         # Initialize Zenoh session
         self.session = zenoh.open(zenoh.Config())
-        # Publisher for object position messages
-        self.pos_pub = self.session.declare_publisher("tracking/position")
-        # Initialize a lock and storage for the latest camera frame
+        # Publisher for twist (command) messages on topic "robot/cmd"
+        self.cmd_pub = self.session.declare_publisher("robot/cmd")
+        # Initialize a lock and storage for the latest camera frame.
         self.latest_frame = None
         self.frame_lock = threading.Lock()
-        # Subscribe to the camera feed
+        # Subscribe to the camera feed published from the robot (e.g. from webcam_publisher)
         self.frame_sub = self.session.declare_subscriber("robot/camera/frame", self.on_frame)
         
         # Initialize Rerun visualization
@@ -37,7 +36,7 @@ class TrackingPublisher:
             exit(1)
             
         self.prompt = prompt
-        # Create AsyncTracker with 2 second detection interval
+        # Create AsyncTracker; detection thread will be started in run() to update tracking state concurrently.
         self.tracker = AsyncTracker(self.model, self.prompt, detection_interval=2.0, display_ui=False)
 
     def on_frame(self, sample):
@@ -50,14 +49,33 @@ class TrackingPublisher:
         except Exception as e:
             print(f"Error processing camera frame: {e}")
 
+    def compute_twist(self, state, frame_width, loop_rate):
+        """
+        Compute a twist command based on tracking state.
+        Here we compute the error between the target's x position (from the Kalman filter)
+        and the center of the frame. We then compute angular velocity to steer toward the target.
+        A constant linear velocity is used if the loop rate is above 10 Hz, else zero.
+        """
+        if state['kalman'] is None:
+            return {'x': 0.0, 'theta': 0.0}
+        target_x = state['kalman'][0]
+        center_x = frame_width / 2.0
+        error_x = target_x - center_x
+        gain = 0.005
+        max_angular_z = 0.35
+        angular_z = -gain * error_x
+        angular_z = min(angular_z, max_angular_z)
+        angular_z = max(angular_z, -max_angular_z)
+        linear_x = 0.0
+        return {'x': float(linear_x), 'theta': float(angular_z)}
+
     def run(self):
-        """Main loop: processes incoming frames, updates tracking, and publishes position."""
+        """Main loop: processes incoming frames, updates tracking, computes twist, and publishes it."""
         try:
-            print("Running tracking publisher.")
+            print("Running zenoh publisher for tracking and twist commands.")
             # Start the AsyncTracker's detection thread
             self.tracker.start()
             prev_loop_time = time.time()
-            
             while True:
                 current_time = time.time()
                 dt = current_time - prev_loop_time
@@ -78,44 +96,31 @@ class TrackingPublisher:
                 state = self.tracker.get_state()
 
                 if state['bbox'] is not None and state['kalman'] is not None:
-                    # Get frame dimensions for normalized coordinates
-                    frame_height, frame_width = frame.shape[:2]
-                    
-                    # Extract position information
-                    center_x, center_y = state['kalman']
-                    x_min, y_min, x_max, y_max = state['bbox']
-                    width = x_max - x_min
-                    height = y_max - y_min
-                    
-                    # Create position message with normalized coordinates
-                    pos_msg = {
-                        'x': float(center_x / frame_width),
-                        'y': float(center_y / frame_height),
-                        'width': float(width / frame_width),
-                        'height': float(height / frame_height),
-                        'confidence': float(state.get('confidence', 1.0)),
-                        'timestamp': time.time()
-                    }
-                    
+                    frame_width = frame.shape[1]
+                    twist_cmd = self.compute_twist(state, frame_width, loop_rate)
                     print(f"Loop rate: {loop_rate:.2f} Hz")
-                    print(f"Publishing position: {pos_msg}")
-                    self.pos_pub.put(json.dumps(pos_msg))
+                    print(f"Tracking: center={state['kalman']}, bbox={state['bbox']}")
+                    print(f"Twist command: {twist_cmd}")
+                    self.cmd_pub.put(json.dumps(twist_cmd))
                     
                     # Draw bounding box on frame for visualization
-                    new_bbox = (int(center_x - width/2), int(center_y - height/2),
-                              int(center_x + width/2), int(center_y + height/2))
+                    x_min, y_min, x_max, y_max = state['bbox']
+                    w = x_max - x_min
+                    h = y_max - y_min
+                    center = state['kalman']
+                    new_bbox = (int(center[0] - w/2), int(center[1] - h/2), int(center[0] + w/2), int(center[1] + h/2))
                     frame = draw_bbox(frame, new_bbox)
                 else:
-                    print("No valid tracking detected")
+                    twist_cmd = {'x': 0.0, 'theta': 0.0}
+                    print("No valid tracking, publishing zero twist command")
+                    self.cmd_pub.put(json.dumps(twist_cmd))
 
-                # Visualize the frame with Rerun
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 rr.log("camera/frame", rr.Image(frame_rgb))
 
-                time.sleep(1.0 / 30.0)  # Cap at 30 FPS
-                
+                time.sleep(1.0 / 30.0)
         except KeyboardInterrupt:
-            print("Shutting down tracking publisher.")
+            print("Shutting down zenoh publisher.")
         finally:
             self.session.close()
             rr.disconnect()
@@ -123,13 +128,11 @@ class TrackingPublisher:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Zenoh publisher for object tracking using Moondream"
+        description="Zenoh publisher for object tracking and twist command generation using Moondream and AsyncTracker"
     )
-    parser.add_argument("--prompt", type=str, required=True,
-                      help="Target object prompt for tracking")
+    parser.add_argument("--prompt", type=str, required=True, help="Target object prompt for tracking")
     args = parser.parse_args()
-    
-    tracker = TrackingPublisher(args.prompt)
+    tracker = ZenohPub(args.prompt)
     tracker.run()
 
 
