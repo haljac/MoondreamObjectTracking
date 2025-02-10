@@ -93,7 +93,6 @@ class TrackingPublisher:
                         'y': float(center_y / frame_height),
                         'width': float(width / frame_width),
                         'height': float(height / frame_height),
-                        'confidence': float(state.get('confidence', 1.0)),
                         'timestamp': time.time()
                     }
                     
