@@ -29,7 +29,6 @@ The system consists of three main components that can run on different machines 
        "y": float,        // Normalized y position (0-1)
        "width": float,    // Normalized width (0-1)
        "height": float,   // Normalized height (0-1)
-       "confidence": float, // Detection confidence
        "timestamp": float  // Unix timestamp
      }
      ```
