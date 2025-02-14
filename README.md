@@ -64,7 +64,7 @@ You may also need libraries for concurrency (threading) and data structures (col
 2. **Install dependencies** (using `pip`):
 
    ```bash
-   pip install opencv-python Pillow numpy moondream zenoh-python rerun-sdk
+   pip install opencv-python Pillow numpy moondream eclipse-zenoh rerun-sdk
    ```
 
 3. **API Key**  
