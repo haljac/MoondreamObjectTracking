@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import cv2
 import zenoh
 import json
@@ -8,8 +9,11 @@ import numpy as np
 import argparse
 import threading
 import moondream as md
+import sys
 from async_tracking import AsyncTracker, draw_bbox
 
+# Global flag to signal program termination
+should_exit = False
 
 class ZenohPub:
     def __init__(self, prompt):
@@ -24,6 +28,7 @@ class ZenohPub:
         self.frame_sub = self.session.declare_subscriber("robot/camera/frame", self.on_frame)
         
         # Initialize Rerun visualization
+        self.prompt = prompt
         rr.init("Object Tracking", spawn=True)
         
         # Initialize Moondream model using an API key stored in api_key.txt
@@ -35,7 +40,6 @@ class ZenohPub:
             print(f"Failed to initialize moondream model: {e}")
             exit(1)
             
-        self.prompt = prompt
         # Create AsyncTracker; detection thread will be started in run() to update tracking state concurrently.
         self.tracker = AsyncTracker(self.model, self.prompt, detection_interval=2.0, display_ui=False)
 
@@ -76,7 +80,7 @@ class ZenohPub:
             # Start the AsyncTracker's detection thread
             self.tracker.start()
             prev_loop_time = time.time()
-            while True:
+            while not should_exit:  # Check the global flag
                 current_time = time.time()
                 dt = current_time - prev_loop_time
                 prev_loop_time = current_time
@@ -126,14 +130,62 @@ class ZenohPub:
             rr.disconnect()
 
 
+def timeout_handler():
+    """Function to handle timeout by setting the global exit flag"""
+    global should_exit
+    print("Timeout reached, shutting down...")
+    should_exit = True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Zenoh publisher for object tracking and twist command generation using Moondream and AsyncTracker"
     )
     parser.add_argument("--prompt", type=str, required=True, help="Target object prompt for tracking")
+    parser.add_argument("--timeout", type=float, default=None, help="Timeout in seconds after which the program will exit")
+    parser.add_argument("--rerun-addr", type=str, help="Address of existing Rerun instance to connect to (e.g. '127.0.0.1:9876')")
     args = parser.parse_args()
+
+    print(os.system("pwd"))
+
+    # Initialize Rerun visualization
+    if args.rerun_addr:
+        print(f"Connecting to existing Rerun instance at {args.rerun_addr}")
+        rr.connect_tcp(args.rerun_addr)
+    else:
+        print("Spawning new Rerun instance")
+        rr.init("Object Tracking", spawn=True)
+
     tracker = ZenohPub(args.prompt)
-    tracker.run()
+    
+    # Set up timeout if specified
+    if args.timeout:
+        print(f"Running with {args.timeout} second timeout")
+        # First set a timer that will send a zero command shortly before actual timeout
+        safety_margin = min(1.0, args.timeout * 0.1)  # 10% of timeout or 1 second, whichever is smaller
+        safety_timer = threading.Timer(args.timeout - safety_margin, 
+                                      lambda: tracker.cmd_pub.put(json.dumps({'x': 0.0, 'theta': 0.0})))
+        safety_timer.daemon = True
+        safety_timer.start()
+        
+        # Then set the actual timeout timer
+        timer = threading.Timer(args.timeout, timeout_handler)
+        timer.daemon = True
+        timer.start()
+    
+    try:
+        tracker.run()
+    except KeyboardInterrupt:
+        print("Sending zero command to stop the robot...")
+        tracker.cmd_pub.put(json.dumps({'x': 0.0, 'theta': 0.0}))
+        # Small delay to ensure the command is sent
+        time.sleep(0.2)
+
+        print("Interrupted by user, shutting down...")
+    finally:
+        # Ensure we set the exit flag to stop any running threads
+        global should_exit
+        should_exit = True
 
 
 if __name__ == "__main__":
