@@ -9,29 +9,49 @@ import numpy as np
 import argparse
 import threading
 import moondream as md
+from constants import (
+    CAMERA_FRAME_KEY
+)
 from async_tracking import AsyncTracker, draw_bbox
 
+
+def create_config():
+    config = zenoh.Config()
+    
+    # Connection endpoints
+    config.insert_json5(
+        "connect/endpoints", 
+        '["tcp/localhost:7447"]'  # Must be valid JSON5 string
+    )
+    
+    # Multicast scouting configuration
+    config.insert_json5("scouting/multicast/enabled", "true")
+    config.insert_json5("scouting/multicast/address", '"224.0.0.224:7447"')
+    
+    # TCP-specific settings
+    config.insert_json5("transport/link/tcp/so_rcvbuf", "65535")
+    config.insert_json5("transport/link/tcp/so_sndbuf", "65535")
+    
+    return config
 
 class TrackingPublisher:
     def __init__(self, prompt):
         # Initialize Zenoh session
-        self.session = zenoh.open(zenoh.Config())
+        self.session = zenoh.open(create_config())
         # Publisher for object position messages
         self.pos_pub = self.session.declare_publisher("tracking/position")
         # Initialize a lock and storage for the latest camera frame
         self.latest_frame = None
         self.frame_lock = threading.Lock()
         # Subscribe to the camera feed
-        self.frame_sub = self.session.declare_subscriber("robot/camera/frame", self.on_frame)
+        self.frame_sub = self.session.declare_subscriber(CAMERA_FRAME_KEY, self.on_frame)
         
         # Initialize Rerun visualization
         rr.init("Object Tracking", spawn=True)
         
         # Initialize Moondream model using an API key stored in api_key.txt
         try:
-            with open('api_key.txt', 'r') as f:
-                api_key = f.read().strip()
-            self.model = md.vl(api_key=api_key)
+            self.model = md.vl(endpoint="http://localhost:2020/v1")
         except Exception as e:
             print(f"Failed to initialize moondream model: {e}")
             exit(1)

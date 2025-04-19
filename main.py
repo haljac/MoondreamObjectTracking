@@ -25,12 +25,7 @@ def main():
 
         # Initialize Moondream model
         try:
-            with open('api_key.txt', 'r') as f:
-                api_key = f.read().strip()
-            model = md.vl(api_key=api_key)
-        except FileNotFoundError:
-            print("Error: api_key.txt not found. Please create this file with your Moondream API key.")
-            return
+            model = md.vl(endpoint="http://localhost:2020/v1")
         except Exception as e:
             print(f"Error initializing Moondream model: {e}")
             return

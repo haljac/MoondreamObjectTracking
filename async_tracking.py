@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import moondream as md
 from PIL import Image
 import threading
 import time
@@ -363,7 +362,7 @@ class AsyncTracker:
             self.last_detection_tick = current_time
             with self.lock:
                 if not self.frame_buffer:
-                    print(f"[{{time.time()}}] [AsyncTracker] No frames available for detection in tick")
+                    print("[{time.time()}] [AsyncTracker] No frames available for detection in tick")
                     return
                 last_frame_index, last_frame_bgr, last_frame_gray = self.frame_buffer[-1]
                 self.requested_detection_frame = last_frame_index

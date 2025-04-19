@@ -9,7 +9,6 @@ import numpy as np
 import argparse
 import threading
 import moondream as md
-import sys
 from async_tracking import AsyncTracker, draw_bbox
 
 # Global flag to signal program termination
@@ -33,9 +32,7 @@ class ZenohPub:
         
         # Initialize Moondream model using an API key stored in api_key.txt
         try:
-            with open('api_key.txt', 'r') as f:
-                api_key = f.read().strip()
-            self.model = md.vl(api_key=api_key)
+            self.model = md.vl(endpoint="http://localhost:2020/v1")
         except Exception as e:
             print(f"Failed to initialize moondream model: {e}")
             exit(1)

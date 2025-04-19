@@ -1,6 +1,5 @@
 import cv2
 import zenoh
-from zenoh import Config
 import time
 
 from constants import (
@@ -12,6 +11,25 @@ from constants import (
     CROP_TO_MONO,
     CROP_TO_RIGHT_FRAME
 )
+
+def create_config():
+    config = zenoh.Config()
+    
+    # Connection endpoints
+    config.insert_json5(
+        "connect/endpoints", 
+        '["tcp/localhost:7447"]'  # Must be valid JSON5 string
+    )
+    
+    # Multicast scouting configuration
+    config.insert_json5("scouting/multicast/enabled", "true")
+    config.insert_json5("scouting/multicast/address", '"224.0.0.224:7447"')
+    
+    # TCP-specific settings
+    config.insert_json5("transport/link/tcp/so_rcvbuf", "65535")
+    config.insert_json5("transport/link/tcp/so_sndbuf", "65535")
+    
+    return config
 
 def crop_frame_to_mono(frame):
     """
@@ -48,12 +66,13 @@ def main():
         return
 
     # Initialize Zenoh session with config
-    with zenoh.open(Config()) as z_session:
+    with zenoh.open(create_config()) as z_session:
         print("Press Ctrl+C to quit.")
         
         # For FPS calculation
         frame_count = 0
         fps_start_time = time.monotonic()
+        pub = z_session.declare_publisher(CAMERA_FRAME_KEY)
         
         try:
             while True:
@@ -77,7 +96,7 @@ def main():
                 # Publish to Zenoh
                 success, buffer = cv2.imencode('.jpg', frame)
                 if success:
-                    z_session.put(CAMERA_FRAME_KEY, buffer.tobytes())
+                    pub.put(buffer.tobytes())
 
                 # Calculate and maintain FPS
                 frame_count += 1
